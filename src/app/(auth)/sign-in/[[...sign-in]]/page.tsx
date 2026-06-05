@@ -1,4 +1,5 @@
 import { SignIn } from '@clerk/nextjs';
+import { dark } from '@clerk/themes';
 import { Sparkles } from 'lucide-react';
 
 export default function SignInPage() {
@@ -19,32 +20,13 @@ export default function SignInPage() {
           </span>
         </div>
 
-        {/* Clerk Sign In component */}
-        <div className="w-full glass-panel rounded-2xl overflow-hidden p-1 shadow-2xl flex justify-center border-white/5">
+        {/* Clerk Sign In component (Uses baseTheme directly to avoid text/background contrast conflicts) */}
+        <div className="w-full flex justify-center shadow-2xl">
           <SignIn
             appearance={{
+              baseTheme: dark,
               variables: {
                 colorPrimary: '#6366f1',
-                colorBackground: '#0c0c0e',
-                colorInputBackground: '#060608',
-                colorInputText: '#f4f4f7',
-                colorText: '#f4f4f7',
-                colorTextSecondary: '#a1a1aa',
-                colorTextOnPrimaryBackground: '#ffffff',
-                borderRadius: '0.75rem',
-              },
-              elements: {
-                cardBox: 'shadow-none border-0 bg-transparent w-full',
-                card: 'bg-transparent shadow-none border-0 w-full p-6 sm:p-8',
-                headerTitle: 'text-zinc-100 text-lg font-bold tracking-tight',
-                headerSubtitle: 'text-zinc-400 text-xs font-normal',
-                socialButtonsBlockButton: 'bg-zinc-900 border border-zinc-800 text-zinc-200 hover:bg-zinc-850 hover:text-white transition-all',
-                formFieldLabel: 'text-zinc-400 font-semibold text-xs uppercase tracking-wider',
-                formFieldInput: 'bg-zinc-950 border border-zinc-800 text-zinc-100 placeholder-zinc-650 focus:border-primary/60 focus:ring-0 text-sm py-2 px-3 transition-all',
-                footerActionText: 'text-zinc-550',
-                footerActionLink: 'text-primary hover:text-indigo-400 font-semibold transition-all',
-                dividerText: 'text-zinc-600 font-medium text-xs',
-                dividerLine: 'bg-zinc-900',
               },
             }}
           />
