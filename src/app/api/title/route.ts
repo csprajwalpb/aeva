@@ -1,9 +1,19 @@
 import { withRetry, getGeminiModel, logServerError } from '@/lib/gemini';
+import { auth } from '@clerk/nextjs/server';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
+    // 1. Clerk session authorization verification
+    const authSession = await auth();
+    if (!authSession.userId) {
+      return new Response(JSON.stringify({ error: 'Unauthorized session access. Please log in.' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const { message } = await req.json();
 
     if (!message || typeof message !== 'string') {
@@ -40,10 +50,7 @@ export async function POST(req: Request) {
       });
       title = result.response.text().trim();
     } catch (apiError) {
-      // Log title-specific errors only in dev mode
       logServerError('Failed to generate title from Gemini API, falling back to slice', apiError);
-      
-      // Safe fallback - prevents chat crashing when API is unavailable
       title = message.trim().slice(0, 25) + (message.length > 25 ? '...' : '');
     }
 
@@ -64,7 +71,6 @@ export async function POST(req: Request) {
     });
   } catch (error: any) {
     logServerError('Crash in title endpoint handler', error);
-    // Guarantee fallback response even on total endpoint failure
     return new Response(JSON.stringify({ title: 'New Conversation' }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

@@ -1,25 +1,31 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Conversation, Message, AppSettings } from '@/types/chat';
+import { Conversation, Message } from '@/types/chat';
 import { 
-  getSavedConversations, saveConversations, 
-  getAppSettings, saveAppSettings 
-} from '@/lib/storage';
+  fetchConversations, 
+  createConversation, 
+  renameConversation, 
+  deleteConversation, 
+  createMessage,
+  deleteLastMessage
+} from '@/actions/chat';
 import Sidebar from '@/components/layout/Sidebar';
 import ChatArea from '@/components/chat/ChatArea';
 import ChatInput from '@/components/chat/ChatInput';
+import MigrationBanner from '@/components/chat/MigrationBanner';
 import SettingsModal from '@/components/settings/SettingsModal';
 import { Menu, Sparkles, AlertCircle } from 'lucide-react';
+import { useUser } from '@clerk/nextjs';
+import toast from 'react-hot-toast';
 
 export default function Home() {
-  // Mounting guard for SSR
   const [mounted, setMounted] = useState(false);
+  const { user, isLoaded } = useUser();
 
   // Core States
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
-  const [settings, setSettings] = useState<AppSettings>({ userName: 'Explorer', userAvatarSeed: 'avatar-explorer' });
   const [input, setInput] = useState('');
   
   // Interactive UI States
@@ -29,27 +35,32 @@ export default function Home() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // References for stream stop and scroll tracking
+  // References for stream stop
   const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Initialize data on mount
+  // Load conversations from database on load
+  const loadConversations = async (selectNewest = false) => {
+    try {
+      const res = await fetchConversations();
+      if (res.success && res.conversations) {
+        setConversations(res.conversations);
+        if (selectNewest && res.conversations.length > 0) {
+          setActiveConversationId(res.conversations[0].id);
+        }
+      } else {
+        console.error('Error loading chats:', res.error);
+      }
+    } catch (e) {
+      console.error('Failed to load chats:', e);
+    }
+  };
+
   useEffect(() => {
-    setConversations(getSavedConversations());
-    setSettings(getAppSettings());
-    setMounted(true);
-  }, []);
-
-  // Sync conversations to LocalStorage when changed
-  const updateConversations = (updated: Conversation[]) => {
-    setConversations(updated);
-    saveConversations(updated);
-  };
-
-  // Sync settings when changed
-  const updateSettings = (updated: AppSettings) => {
-    setSettings(updated);
-    saveAppSettings(updated);
-  };
+    if (isLoaded && user) {
+      loadConversations();
+      setMounted(true);
+    }
+  }, [isLoaded, user]);
 
   // Handle Starting a New Chat
   const handleNewChat = () => {
@@ -67,26 +78,43 @@ export default function Home() {
   };
 
   // Handle Renaming conversation title
-  const handleRenameConversation = (id: string, newTitle: string) => {
-    const updated = conversations.map((conv) => 
-      conv.id === id ? { ...conv, title: newTitle } : conv
+  const handleRenameConversation = async (id: string, newTitle: string) => {
+    const original = [...conversations];
+    
+    // Optimistic UI Update
+    setConversations((prev) => 
+      prev.map((c) => (c.id === id ? { ...c, title: newTitle } : c))
     );
-    updateConversations(updated);
-  };
 
-  // Handle Deleting conversation
-  const handleDeleteConversation = (id: string) => {
-    const updated = conversations.filter((conv) => conv.id !== id);
-    updateConversations(updated);
-
-    if (activeConversationId === id) {
-      setActiveConversationId(updated.length > 0 ? updated[0].id : null);
+    const res = await renameConversation(id, newTitle);
+    if (!res.success) {
+      toast.error(res.error || 'Failed to rename conversation');
+      setConversations(original); // Rollback
+    } else {
+      toast.success('Conversation renamed');
+      loadConversations();
     }
   };
 
-  // Handle Saving Display Name
-  const handleSaveName = (newName: string) => {
-    updateSettings({ ...settings, userName: newName });
+  // Handle Deleting conversation
+  const handleDeleteConversation = async (id: string) => {
+    const original = [...conversations];
+    
+    // Optimistic UI Update
+    const updated = conversations.filter((c) => c.id !== id);
+    setConversations(updated);
+    if (activeConversationId === id) {
+      setActiveConversationId(updated.length > 0 ? updated[0].id : null);
+    }
+
+    const res = await deleteConversation(id);
+    if (!res.success) {
+      toast.error(res.error || 'Failed to delete conversation');
+      setConversations(original); // Rollback
+    } else {
+      toast.success('Conversation deleted');
+      loadConversations();
+    }
   };
 
   // Handle Streaming Stop / Interruption
@@ -98,7 +126,7 @@ export default function Home() {
     }
   };
 
-  // Helper: Triggers streaming API and feeds the active conversation message array
+  // Helper: Streams responses and persists them in Neon PostgreSQL
   const executeStreamQuery = async (targetConvId: string, messagesList: Message[], isRegen: boolean = false) => {
     setIsLoading(true);
     setErrorMessage(null);
@@ -116,7 +144,7 @@ export default function Home() {
       isRegenerated: isRegen || undefined,
     };
 
-    // Optimistically insert the assistant placeholder to state
+    // Optimistically insert placeholder locally to render streaming
     setConversations((prev) => 
       prev.map((c) => 
         c.id === targetConvId 
@@ -159,7 +187,7 @@ export default function Home() {
         const chunkText = decoder.decode(value);
         accumulatedContent += chunkText;
 
-        // Stream update state
+        // Stream text update locally
         setConversations((prev) => 
           prev.map((c) => {
             if (c.id === targetConvId) {
@@ -175,28 +203,39 @@ export default function Home() {
         );
       }
 
-      // Finish streaming successfully
       setIsStreaming(false);
 
-      // Save complete chats to storage
-      setConversations((prev) => {
-        saveConversations(prev);
-        return prev;
-      });
+      // Persist assistant message in DB
+      const resMsg = await createMessage(targetConvId, 'assistant', accumulatedContent);
+      if (!resMsg.success) {
+        console.error('Failed to save AI response to DB:', resMsg.error);
+        toast.error('Failed to save assistant response in database.');
+      }
+
+      // Re-fetch to sync latest timestamps and IDs
+      loadConversations();
 
     } catch (error: any) {
       if (error.name === 'AbortError') {
         console.log('Stream generation aborted by user.');
+        // If aborted, save whatever has been generated so far
+        const activeChat = conversations.find(c => c.id === targetConvId);
+        const lastMsgObj = activeChat?.messages.find(m => m.id === assistantMessageId);
+        const partialContent = lastMsgObj?.content || '';
+        
+        if (partialContent.trim()) {
+          await createMessage(targetConvId, 'assistant', partialContent);
+          loadConversations();
+        }
       } else {
         console.error('Error fetching stream:', error);
         setErrorMessage(error.message || 'Failed to connect to the assistant. Please try again.');
         
-        // Remove empty placeholder if failed immediately
+        // Clean up empty placeholder locally
         setConversations((prev) => 
           prev.map((c) => {
             if (c.id === targetConvId) {
               const cleaned = c.messages.filter((m) => m.id !== assistantMessageId);
-              saveConversations(prev);
               return { ...c, messages: cleaned };
             }
             return c;
@@ -219,13 +258,8 @@ export default function Home() {
       if (res.ok) {
         const data = await res.json();
         if (data.title) {
-          setConversations((prev) => {
-            const updated = prev.map((c) => 
-              c.id === targetConvId ? { ...c, title: data.title } : c
-            );
-            saveConversations(updated);
-            return updated;
-          });
+          await renameConversation(targetConvId, data.title);
+          loadConversations();
         }
       }
     } catch (e) {
@@ -241,46 +275,61 @@ export default function Home() {
     setInput('');
     setErrorMessage(null);
 
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: userPrompt,
-      timestamp: Date.now(),
-    };
-
     let targetConvId = activeConversationId;
     let targetMessagesList: Message[] = [];
 
     if (!targetConvId) {
-      // Create new conversation
-      targetConvId = crypto.randomUUID();
-      const newConv: Conversation = {
-        id: targetConvId,
-        title: 'Summarizing prompt...',
-        createdTime: Date.now(),
-        messages: [userMessage],
-      };
+      // 1. Create chat record in DB
+      const resConv = await createConversation('Summarizing prompt...');
+      if (!resConv.success || !resConv.conversation) {
+        toast.error(resConv.error || 'Failed to create new conversation');
+        return;
+      }
 
-      const updatedHistory = [newConv, ...conversations];
-      setConversations(updatedHistory);
-      saveConversations(updatedHistory);
+      targetConvId = resConv.conversation.id;
       setActiveConversationId(targetConvId);
 
-      targetMessagesList = [userMessage];
+      // 2. Save user message in DB
+      const resMsg = await createMessage(targetConvId, 'user', userPrompt);
+      if (!resMsg.success || !resMsg.message) {
+        toast.error(resMsg.error || 'Failed to save message');
+        return;
+      }
 
-      // Fire title generator and stream in parallel
+      targetMessagesList = [resMsg.message];
+
+      // Optimistically push locally
+      setConversations((prev) => [
+        {
+          ...resConv.conversation!,
+          messages: targetMessagesList,
+        },
+        ...prev,
+      ]);
+
+      // 3. Initiate stream and title summarizer
       triggerBackgroundTitleGeneration(targetConvId, userPrompt);
       await executeStreamQuery(targetConvId, targetMessagesList);
     } else {
-      // Append message to active conversation
+      // Existing chat: save user message in DB first
+      const resMsg = await createMessage(targetConvId, 'user', userPrompt);
+      if (!resMsg.success || !resMsg.message) {
+        toast.error(resMsg.error || 'Failed to save message');
+        return;
+      }
+
       const currentConv = conversations.find((c) => c.id === targetConvId);
       if (currentConv) {
-        targetMessagesList = [...currentConv.messages, userMessage];
+        targetMessagesList = [...currentConv.messages, resMsg.message];
+        
+        // Update state locally
         setConversations((prev) => 
           prev.map((c) => 
             c.id === targetConvId ? { ...c, messages: targetMessagesList } : c
           )
         );
+
+        // Initiate stream
         await executeStreamQuery(targetConvId, targetMessagesList);
       }
     }
@@ -304,14 +353,21 @@ export default function Home() {
     const lastMsg = previousMessages[previousMessages.length - 1];
     
     if (lastMsg.role === 'assistant') {
-      previousMessages.pop(); // Remove the assistant's previous response
+      previousMessages.pop(); // Remove the assistant's previous response from local state
     }
 
+    // Update state locally
     setConversations((prev) => 
       prev.map((c) => 
         c.id === targetConvId ? { ...c, messages: previousMessages } : c
       )
     );
+
+    // Remove the old response from database as well
+    const resDel = await deleteLastMessage(targetConvId);
+    if (!resDel.success) {
+      console.warn('Failed to delete last message in DB:', resDel.error);
+    }
 
     // Relaunch stream on previous messages list
     await executeStreamQuery(targetConvId, previousMessages, true);
@@ -324,15 +380,17 @@ export default function Home() {
   // Hydration fallback
   if (!mounted) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-[#060608] select-none text-zinc-600 font-bold text-xs tracking-widest animate-pulse">
+      <div className="flex h-screen w-screen items-center justify-center bg-[#060608] select-none text-zinc-650 font-bold text-xs tracking-widest animate-pulse">
         AEVA INITIALIZING...
       </div>
     );
   }
 
+  const userName = user?.firstName || 'Explorer';
+
   return (
     <div className="flex h-screen w-screen overflow-hidden mesh-gradient-bg select-none font-sans text-zinc-100 antialiased">
-      {/* Desktop Sidebar (Permanent) */}
+      {/* Desktop Sidebar */}
       <div className="hidden md:block h-full flex-shrink-0">
         <Sidebar
           conversations={conversations}
@@ -348,12 +406,10 @@ export default function Home() {
       {/* Mobile Drawer Sidebar */}
       {isSidebarOpen && (
         <div className="fixed inset-0 z-40 md:hidden flex">
-          {/* Drawer Backdrop */}
           <div 
             onClick={() => setIsSidebarOpen(false)}
             className="absolute inset-0 bg-[#040405]/80 backdrop-blur-sm"
           />
-          {/* Drawer Sidebar Frame */}
           <div className="relative z-10 h-full animate-fade-in">
             <Sidebar
               conversations={conversations}
@@ -376,14 +432,13 @@ export default function Home() {
         {/* Header Bar */}
         <header className="h-14 border-b border-zinc-900/60 bg-transparent flex items-center justify-between px-4 select-none">
           <div className="flex items-center gap-2">
-            {/* Hamburger button (Mobile only) */}
             <button
               onClick={() => setIsSidebarOpen(true)}
               className="p-1.5 rounded-lg border border-zinc-800 hover:border-zinc-700 bg-zinc-900/30 text-zinc-400 hover:text-zinc-200 cursor-pointer outline-none md:hidden"
             >
               <Menu className="w-4 h-4" />
             </button>
-            <span className="font-extrabold text-sm tracking-wider uppercase text-zinc-300 ml-1 select-none">
+            <span className="font-extrabold text-sm tracking-wider uppercase text-zinc-350 ml-1 select-none">
               {activeConversation ? activeConversation.title : 'New Session'}
             </span>
           </div>
@@ -391,7 +446,7 @@ export default function Home() {
           <div className="flex items-center gap-2 pr-1">
             <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-primary/20 bg-primary/5 text-primary text-[10px] font-bold shadow-[0_0_15px_rgba(99,102,241,0.05)] select-none">
               <Sparkles className="w-3 h-3 text-primary animate-pulse" />
-              <span>Gemini 1.5 Flash</span>
+              <span>Gemini 2.5 Flash</span>
             </div>
           </div>
         </header>
@@ -410,17 +465,20 @@ export default function Home() {
           </div>
         )}
 
-        {/* Chat Messages Feed Scroll Area */}
+        {/* Local Storage Migration Banner */}
+        <MigrationBanner onMigrationSuccess={() => loadConversations(true)} />
+
+        {/* Chat Area Scroll container */}
         <ChatArea
           activeConversation={activeConversation}
           onSelectSuggestion={handleSelectSuggestion}
-          userName={settings.userName}
+          userName={userName}
           isStreaming={isStreaming}
           isLoading={isLoading}
           onRegenerate={handleRegenerate}
         />
 
-        {/* Floating Input Controls Section */}
+        {/* Input box */}
         <ChatInput
           input={input}
           setInput={setInput}
@@ -435,8 +493,8 @@ export default function Home() {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        userName={settings.userName}
-        onSaveName={handleSaveName}
+        userName={userName}
+        onSaveName={() => {}} // UserProfile edited in Clerk, make read-only in modal
       />
     </div>
   );

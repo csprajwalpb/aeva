@@ -2,9 +2,10 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Conversation } from '@/types/chat';
 import { 
   Sparkles, Plus, MessageSquare, Edit2, Trash2, 
-  Settings, Download, Check, X, FileText, FileCode 
+  Settings, Check, X, FileText, FileCode, Search 
 } from 'lucide-react';
 import { exportConversation } from '@/lib/utils';
+import { UserButton, useUser } from '@clerk/nextjs';
 
 interface SidebarProps {
   conversations: Conversation[];
@@ -27,7 +28,10 @@ export default function Sidebar({
 }: SidebarProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
+  
+  const { user, isLoaded } = useUser();
 
   // Focus input on edit start
   useEffect(() => {
@@ -58,6 +62,11 @@ export default function Sidebar({
 
   const activeConv = conversations.find(c => c.id === activeConversationId);
 
+  // Live client-side search query filtering
+  const filteredConversations = conversations.filter(conv =>
+    conv.title.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
   return (
     <div className="w-[280px] bg-[#08080a] border-r border-zinc-900/60 flex flex-col h-full select-none text-zinc-300">
       {/* Brand Header */}
@@ -67,7 +76,7 @@ export default function Sidebar({
             <Sparkles className="w-4 h-4 animate-pulse" />
           </div>
           <span className="font-extrabold text-base tracking-widest bg-clip-text text-transparent bg-gradient-to-r from-indigo-200 to-indigo-50">
-            AEVA <span className="text-[10px] tracking-normal font-medium text-primary ml-0.5">v0.1</span>
+            AEVA <span className="text-[10px] tracking-normal font-medium text-primary ml-0.5">v0.2</span>
           </span>
         </div>
       </div>
@@ -83,17 +92,39 @@ export default function Sidebar({
         </button>
       </div>
 
+      {/* Search Conversations Input */}
+      <div className="px-4 py-1.5 relative">
+        <div className="relative flex items-center rounded-xl bg-zinc-950/45 border border-zinc-900 shadow-inner px-3 py-1.5 focus-within:border-zinc-800 transition-colors">
+          <Search className="w-3.5 h-3.5 text-zinc-650 mr-2" />
+          <input
+            type="text"
+            placeholder="Search dialogues..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-transparent border-0 outline-none text-xs text-zinc-200 placeholder-zinc-600 focus:ring-0 leading-none"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="text-zinc-600 hover:text-zinc-400 p-0.5 rounded cursor-pointer outline-none"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Chat History List */}
       <div className="flex-1 overflow-y-auto px-2 py-3 space-y-1.5 scrollbar-thin scrollbar-thumb-zinc-800">
         <div className="px-2 pb-1 text-[10px] font-bold text-zinc-600 tracking-wider uppercase">
           Recent Dialogues
         </div>
-        {conversations.length === 0 ? (
-          <div className="px-4 py-8 text-center text-xs text-zinc-600 font-medium">
-            No history yet
+        {filteredConversations.length === 0 ? (
+          <div className="px-4 py-8 text-center text-xs text-zinc-650 font-medium">
+            {searchQuery ? 'No matching chats found' : 'No history yet'}
           </div>
         ) : (
-          conversations.map((conv) => {
+          filteredConversations.map((conv) => {
             const isActive = conv.id === activeConversationId;
             const isEditing = conv.id === editingId;
 
@@ -200,17 +231,39 @@ export default function Sidebar({
         </div>
       )}
 
-      {/* Footer Settings Area */}
+      {/* Footer Settings Area (Clerk Integrated) */}
       <div className="p-4 border-t border-zinc-900/60 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-semibold text-zinc-300 border border-zinc-700">
-            EX
-          </div>
-          <div className="flex flex-col min-w-0">
-            <span className="text-xs font-bold text-zinc-200 truncate leading-none">Developer</span>
-            <span className="text-[9px] text-zinc-500 font-medium truncate mt-0.5">Aeva v0.1 Sandbox</span>
-          </div>
+        <div className="flex items-center gap-2.5 min-w-0">
+          {isLoaded && user ? (
+            <div className="flex items-center gap-2">
+              <UserButton 
+                appearance={{
+                  elements: {
+                    userButtonTrigger: 'focus:outline-none focus:ring-0 outline-none',
+                    avatarBox: 'w-8 h-8 rounded-full border border-zinc-850',
+                  }
+                }}
+              />
+              <div className="flex flex-col min-w-0 text-left">
+                <span className="text-xs font-bold text-zinc-200 truncate leading-none max-w-[130px]">
+                  {user.fullName || 'Explorer'}
+                </span>
+                <span className="text-[9px] text-zinc-500 font-medium truncate max-w-[130px] mt-0.5">
+                  {user.primaryEmailAddress?.emailAddress}
+                </span>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 animate-pulse">
+              <div className="w-8 h-8 rounded-full bg-zinc-800" />
+              <div className="flex flex-col space-y-1">
+                <div className="w-20 h-2 bg-zinc-800 rounded" />
+                <div className="w-14 h-1.5 bg-zinc-900 rounded" />
+              </div>
+            </div>
+          )}
         </div>
+        
         <button
           onClick={onOpenSettings}
           className="p-2 rounded-lg hover:bg-zinc-900 text-zinc-500 hover:text-zinc-200 transition-colors cursor-pointer outline-none"

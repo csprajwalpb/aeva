@@ -1,9 +1,19 @@
 import { withRetry, getGeminiModel, logServerError, getFriendlyErrorMessage } from '@/lib/gemini';
+import { auth } from '@clerk/nextjs/server';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: Request) {
   try {
+    // 1. Clerk session authorization verification
+    const authSession = await auth();
+    if (!authSession.userId) {
+      return new Response(JSON.stringify({ error: 'Unauthorized session access. Please log in.' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const { messages } = await req.json();
 
     if (!messages || !Array.isArray(messages)) {
