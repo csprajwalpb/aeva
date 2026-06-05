@@ -37,7 +37,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 ## Roadmap
 
 - [x] v0.1 Chat Assistant
-- [ ] v0.2 Authentication
+- [x] v0.2 Authentication
 - [ ] v0.3 Voice
 - [ ] v0.4 Memory
 - [ ] v0.5 Documents
